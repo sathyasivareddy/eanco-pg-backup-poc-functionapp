@@ -54,22 +54,18 @@ jobs:
           app-name: ${{ env.FUNCTION_APP_NAME }}
           image: ${{ steps.meta.outputs.image_sha }}
 
-      - name: Push app settings from local.settings.json
+      - name: Push app settings to Function App
         run: |
-          # Read every key under "Values" from local.settings.json, skipping the
-          # local-only runtime keys that must NOT be pushed to Azure.
-          SETTINGS=$(jq -r '
-            .Values
-            | del(.AzureWebJobsStorage, .FUNCTIONS_WORKER_RUNTIME)
-            | to_entries
-            | map("\(.key)=\(.value)")
-            | .[]
-          ' local.settings.json)
+          # Read non-secret settings from the committed appsettings.deploy.json,
+          # then add the secret values from GitHub secrets.
+          SETTINGS=$(jq -r 'to_entries | map("\(.key)=\(.value)") | .[]' appsettings.deploy.json)
 
           az functionapp config appsettings set \
             --name "${{ env.FUNCTION_APP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --settings $SETTINGS
+            --settings $SETTINGS \
+              POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+              STORAGE_CONNECTION_STRING="${{ secrets.STORAGE_CONNECTION_STRING }}"
 
       - name: Azure logout
         if: always()
