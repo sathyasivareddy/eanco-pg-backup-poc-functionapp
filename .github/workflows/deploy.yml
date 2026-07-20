@@ -1,0 +1,76 @@
+name: Build and deploy PostgreSQL backup container to Azure Function App
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'README.md'
+  workflow_dispatch:
+
+env:
+  # ---- Update these to match your environment (or set as repo variables) ----
+  ACR_NAME: ${{ vars.ACR_NAME }}                 # e.g. mycompanyacr (without .azurecr.io)
+  IMAGE_NAME: pg-backup                          # container image repository name
+  FUNCTION_APP_NAME: ${{ vars.FUNCTION_APP_NAME }} # the Azure Function App name
+  RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}     # resource group of the Function App
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_NAME }}.azurecr.io
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Set image tags
+        id: meta
+        run: |
+          echo "image_sha=${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "image_latest=${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        run: |
+          docker build \
+            -t "${{ steps.meta.outputs.image_sha }}" \
+            -t "${{ steps.meta.outputs.image_latest }}" .
+          docker push "${{ steps.meta.outputs.image_sha }}"
+          docker push "${{ steps.meta.outputs.image_latest }}"
+
+      - name: Deploy image to Azure Function App
+        uses: azure/functions-container-action@v1
+        with:
+          app-name: ${{ env.FUNCTION_APP_NAME }}
+          image: ${{ steps.meta.outputs.image_sha }}
+
+      - name: Push app settings from local.settings.json
+        run: |
+          # Read every key under "Values" from local.settings.json, skipping the
+          # local-only runtime keys that must NOT be pushed to Azure.
+          SETTINGS=$(jq -r '
+            .Values
+            | del(.AzureWebJobsStorage, .FUNCTIONS_WORKER_RUNTIME)
+            | to_entries
+            | map("\(.key)=\(.value)")
+            | .[]
+          ' local.settings.json)
+
+          az functionapp config appsettings set \
+            --name "${{ env.FUNCTION_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --settings $SETTINGS
+
+      - name: Azure logout
+        if: always()
+        run: az logout
