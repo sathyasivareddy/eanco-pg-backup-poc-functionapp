@@ -55,17 +55,27 @@ jobs:
           image: ${{ steps.meta.outputs.image_sha }}
 
       - name: Push app settings to Function App
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          STORAGE_CONNECTION_STRING: ${{ secrets.STORAGE_CONNECTION_STRING }}
         run: |
-          # Read non-secret settings from the committed appsettings.deploy.json,
-          # then add the secret values from GitHub secrets.
-          SETTINGS=$(jq -r 'to_entries | map("\(.key)=\(.value)") | .[]' appsettings.deploy.json)
+          # Merge the committed (non-secret) settings with the secret values into
+          # a single JSON object, then apply it via --settings @file. This avoids
+          # word-splitting (e.g. the SCHEDULE cron with spaces) and az CLI's
+          # numeric auto-parsing that breaks plain key=value arguments.
+          jq -n \
+            --slurpfile base appsettings.deploy.json \
+            --arg pw "$POSTGRES_PASSWORD" \
+            --arg cs "$STORAGE_CONNECTION_STRING" \
+            '$base[0] + {POSTGRES_PASSWORD: $pw, STORAGE_CONNECTION_STRING: $cs}' \
+            > settings.generated.json
 
           az functionapp config appsettings set \
             --name "${{ env.FUNCTION_APP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --settings $SETTINGS \
-              POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
-              STORAGE_CONNECTION_STRING="${{ secrets.STORAGE_CONNECTION_STRING }}"
+            --settings @settings.generated.json
+
+          rm -f settings.generated.json
 
       - name: Azure logout
         if: always()
